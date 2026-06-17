@@ -351,6 +351,51 @@
       margin-top: 12px;
     }
 
+    .field-chip-grid,
+    .layer-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .field-chip,
+    .layer-card {
+      padding: 12px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.86);
+      border: 1px solid rgba(24, 35, 33, 0.08);
+    }
+
+    .field-chip strong,
+    .layer-card strong {
+      display: block;
+      font-size: 0.92rem;
+      margin-bottom: 4px;
+    }
+
+    .field-chip code,
+    .helper-box code,
+    .mono {
+      font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+      font-size: 0.84rem;
+    }
+
+    .helper-box {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: rgba(24, 35, 33, 0.05);
+      color: var(--ink-soft);
+      line-height: 1.65;
+      font-size: 0.88rem;
+    }
+
+    .mini-grid {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .template-item {
       display: grid;
       grid-template-columns: 62px minmax(0, 1fr);
@@ -680,6 +725,18 @@
         <section class="panel">
           <div class="panel-head">
             <div>
+              <h2>字段识别</h2>
+              <p class="subcopy">自动从 URL 里提取参数和路径字段，供文本映射和二维码内容模板使用。</p>
+            </div>
+          </div>
+
+          <div id="fieldSummary" class="helper-box">还没有识别到字段。先输入 URL，工具会自动提取如 <code>name</code>、<code>id</code>、<code>utm_source</code>、<code>slug</code> 等字段。</div>
+          <div id="detectedFields" class="field-chip-grid"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
               <h2>二维码参数</h2>
               <p class="subcopy">单位使用模板原图像素。可直接输入、拖拽微调，也可尝试自动识别。</p>
             </div>
@@ -711,6 +768,40 @@
             <button id="importConfigBtn" class="btn btn-secondary" type="button">导入配置 JSON</button>
             <input id="configInput" class="hidden" type="file" accept=".json,application/json">
           </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>二维码 DIY</h2>
+              <p class="subcopy">可自定义二维码实际编码内容，支持字段占位符，比如 <code>{url}</code>、<code>{name}</code>、<code>{id}</code>。</p>
+            </div>
+          </div>
+
+          <div class="field-stack">
+            <label for="qrContentTemplate">
+              二维码内容模板
+              <input id="qrContentTemplate" type="text" value="{url}" placeholder="{url}">
+            </label>
+          </div>
+
+          <div id="qrTemplatePreview" class="helper-box">当前二维码内容模板：<code>{url}</code></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>文字映射</h2>
+              <p class="subcopy">把 URL 里的字段画到模板上。每个文字层都支持占位符，例如 <code>姓名：{name}</code>。</p>
+            </div>
+          </div>
+
+          <div class="button-row">
+            <button id="addTextLayerBtn" class="btn btn-secondary" type="button">新增文字层</button>
+            <button id="loadSuggestedLayersBtn" class="btn btn-secondary" type="button">加载常见字段层</button>
+          </div>
+
+          <div id="textLayerList" class="layer-list"></div>
         </section>
 
         <section class="panel">
@@ -786,6 +877,10 @@
       qrRect: { x: 100, y: 200, width: 300, height: 300 },
       templates: [],
       results: [],
+      records: [],
+      fieldKeys: [],
+      qrContentTemplate: "{url}",
+      textLayers: [],
       generating: false,
       overlayMeta: null,
       dragState: null,
@@ -810,6 +905,13 @@
       dedupeBtn: document.getElementById("dedupeBtn"),
       clearUrlsBtn: document.getElementById("clearUrlsBtn"),
       demoTemplateBtn: document.getElementById("demoTemplateBtn"),
+      fieldSummary: document.getElementById("fieldSummary"),
+      detectedFields: document.getElementById("detectedFields"),
+      qrContentTemplate: document.getElementById("qrContentTemplate"),
+      qrTemplatePreview: document.getElementById("qrTemplatePreview"),
+      textLayerList: document.getElementById("textLayerList"),
+      addTextLayerBtn: document.getElementById("addTextLayerBtn"),
+      loadSuggestedLayersBtn: document.getElementById("loadSuggestedLayersBtn"),
       exportConfigBtn: document.getElementById("exportConfigBtn"),
       importConfigBtn: document.getElementById("importConfigBtn"),
       configInput: document.getElementById("configInput"),
@@ -869,6 +971,109 @@
         return "https://" + trimmed.replace(/^https?:\/\//i, "");
       }
       return trimmed;
+    }
+
+    function sanitizeFieldKey(key) {
+      return String(key || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 40);
+    }
+
+    function extractUrlRecord(urlString, index) {
+      const normalized = normalizeUrl(urlString);
+      const record = {
+        index: index + 1,
+        url: normalized,
+        original_url: urlString,
+      };
+
+      try {
+        const parsed = new URL(normalized);
+        const segments = parsed.pathname.split("/").filter(Boolean);
+        const slug = segments.length ? decodeURIComponent(segments[segments.length - 1]) : "";
+        record.protocol = parsed.protocol.replace(":", "");
+        record.host = parsed.host;
+        record.hostname = parsed.hostname;
+        record.pathname = decodeURIComponent(parsed.pathname || "/");
+        record.slug = slug;
+
+        segments.forEach((segment, segmentIndex) => {
+          record["path_segment_" + (segmentIndex + 1)] = decodeURIComponent(segment);
+        });
+
+        parsed.searchParams.forEach((value, key) => {
+          const safeKey = sanitizeFieldKey(key);
+          if (!safeKey) {
+            return;
+          }
+          if (record[safeKey]) {
+            record[safeKey] = record[safeKey] + " | " + value;
+          } else {
+            record[safeKey] = value;
+          }
+        });
+
+        if (parsed.hash && parsed.hash.includes("=")) {
+          const hashParams = new URLSearchParams(parsed.hash.replace(/^#/, ""));
+          hashParams.forEach((value, key) => {
+            const safeKey = sanitizeFieldKey("hash_" + key);
+            if (safeKey && !record[safeKey]) {
+              record[safeKey] = value;
+            }
+          });
+        }
+      } catch (error) {
+        record.slug = "";
+      }
+
+      return record;
+    }
+
+    function buildRecordsFromUrls(urls) {
+      return urls.map((url, index) => extractUrlRecord(url, index));
+    }
+
+    function collectFieldKeys(records) {
+      const reserved = new Set(["index", "url", "original_url"]);
+      const priority = ["name", "title", "company", "id", "code", "slug", "pathname", "host", "hostname"];
+      const ordered = [];
+      const seen = new Set();
+
+      records.forEach((record) => {
+        Object.keys(record).forEach((key) => {
+          if (reserved.has(key) || !record[key] || seen.has(key)) {
+            return;
+          }
+          seen.add(key);
+          ordered.push(key);
+        });
+      });
+
+      return ordered.sort((a, b) => {
+        const ai = priority.indexOf(a);
+        const bi = priority.indexOf(b);
+        if (ai !== -1 || bi !== -1) {
+          if (ai === -1) {
+            return 1;
+          }
+          if (bi === -1) {
+            return -1;
+          }
+          return ai - bi;
+        }
+        return a.localeCompare(b);
+      });
+    }
+
+    function renderTemplateString(template, record) {
+      const source = String(template || "");
+      return source.replace(/\{([a-z0-9_]+)\}/gi, (_, rawKey) => {
+        const key = sanitizeFieldKey(rawKey);
+        return record && record[key] != null ? String(record[key]) : "";
+      });
     }
 
     function uniqueValues(list) {
@@ -980,11 +1185,118 @@
       return uniqueValues(urls.filter(isLikelyUrl));
     }
 
-    function updateUrlStats() {
+    function createDefaultTextLayer(initial = {}) {
+      return {
+        id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()),
+        contentTemplate: initial.contentTemplate || "",
+        x: initial.x != null ? initial.x : 120,
+        y: initial.y != null ? initial.y : 1180 + state.textLayers.length * 58,
+        fontSize: initial.fontSize != null ? initial.fontSize : 34,
+        lineHeight: initial.lineHeight != null ? initial.lineHeight : 1.35,
+        color: initial.color || "#162221",
+        fontWeight: initial.fontWeight || "600",
+        maxWidth: initial.maxWidth != null ? initial.maxWidth : 680,
+        align: initial.align || "left",
+      };
+    }
+
+    function ensureTextLayers() {
+      if (!state.textLayers.length) {
+        state.textLayers = [createDefaultTextLayer({ contentTemplate: "{slug}" })];
+      }
+    }
+
+    function renderFieldInsights() {
+      const records = state.records;
+      const fieldKeys = state.fieldKeys;
+      const firstRecord = records[0];
+
+      if (!records.length) {
+        dom.fieldSummary.innerHTML = '还没有识别到字段。先输入 URL，工具会自动提取如 <code>name</code>、<code>id</code>、<code>utm_source</code>、<code>slug</code> 等字段。';
+        dom.detectedFields.innerHTML = "";
+        dom.qrTemplatePreview.innerHTML = "当前二维码内容模板：<code>" + escapeHtml(state.qrContentTemplate) + "</code>";
+        return;
+      }
+
+      dom.fieldSummary.innerHTML =
+        "已从 <strong>" +
+        records.length +
+        "</strong> 条 URL 中识别到 <strong>" +
+        fieldKeys.length +
+        "</strong> 个可用字段。你可以在文字层或二维码模板中使用 <code>{字段名}</code>。";
+
+      dom.detectedFields.innerHTML = "";
+      const fragment = document.createDocumentFragment();
+      fieldKeys.slice(0, 18).forEach((fieldKey) => {
+        const chip = document.createElement("div");
+        chip.className = "field-chip";
+        chip.innerHTML =
+          "<strong>{" +
+          escapeHtml(fieldKey) +
+          "}</strong><code>" +
+          escapeHtml(String(firstRecord[fieldKey] || "")) +
+          "</code>";
+        fragment.appendChild(chip);
+      });
+      if (fieldKeys.length > 18) {
+        const chip = document.createElement("div");
+        chip.className = "field-chip";
+        chip.innerHTML = "<strong>更多字段</strong><span>其余 " + (fieldKeys.length - 18) + " 个字段同样可直接用在模板里。</span>";
+        fragment.appendChild(chip);
+      }
+      dom.detectedFields.appendChild(fragment);
+
+      dom.qrTemplatePreview.innerHTML =
+        "当前二维码内容预览：<code>" +
+        escapeHtml(renderTemplateString(state.qrContentTemplate, firstRecord) || state.qrContentTemplate) +
+        "</code>";
+    }
+
+    function renderTextLayers() {
+      dom.textLayerList.innerHTML = "";
+      ensureTextLayers();
+
+      state.textLayers.forEach((layer, index) => {
+        const card = document.createElement("div");
+        card.className = "layer-card";
+        card.innerHTML = [
+          "<strong>文字层 " + (index + 1) + "</strong>",
+          '<div class="field-stack">',
+          '<label>文本模板<input type="text" data-layer-id="' + layer.id + '" data-layer-field="contentTemplate" value="' + escapeHtml(layer.contentTemplate) + '" placeholder="例如：姓名：{name}"></label>',
+          '<div class="mini-grid">',
+          '<label>X<input type="number" data-layer-id="' + layer.id + '" data-layer-field="x" value="' + escapeHtml(String(layer.x)) + '"></label>',
+          '<label>Y<input type="number" data-layer-id="' + layer.id + '" data-layer-field="y" value="' + escapeHtml(String(layer.y)) + '"></label>',
+          '<label>字号<input type="number" data-layer-id="' + layer.id + '" data-layer-field="fontSize" value="' + escapeHtml(String(layer.fontSize)) + '"></label>',
+          '<label>最大宽度<input type="number" data-layer-id="' + layer.id + '" data-layer-field="maxWidth" value="' + escapeHtml(String(layer.maxWidth)) + '"></label>',
+          '<label>行高<input type="number" step="0.05" data-layer-id="' + layer.id + '" data-layer-field="lineHeight" value="' + escapeHtml(String(layer.lineHeight)) + '"></label>',
+          '<label>颜色<input type="color" data-layer-id="' + layer.id + '" data-layer-field="color" value="' + escapeHtml(layer.color) + '"></label>',
+          '<label>字重<select data-layer-id="' + layer.id + '" data-layer-field="fontWeight">' +
+            ['400','500','600','700','800'].map((weight) => '<option value="' + weight + '"' + (layer.fontWeight === weight ? ' selected' : '') + '>' + weight + '</option>').join("") +
+          '</select></label>',
+          '<label>对齐<select data-layer-id="' + layer.id + '" data-layer-field="align">' +
+            ['left','center','right'].map((align) => '<option value="' + align + '"' + (layer.align === align ? ' selected' : '') + '>' + align + '</option>').join("") +
+          '</select></label>',
+          "</div>",
+          '<div class="button-row"><button class="btn btn-ghost" type="button" data-remove-layer="' + layer.id + '">删除文字层</button></div>',
+          "</div>",
+        ].join("");
+        dom.textLayerList.appendChild(card);
+      });
+    }
+
+    function syncParsedRecords() {
       const urls = parseUrlsFromText(dom.urlInput.value);
+      state.records = buildRecordsFromUrls(urls);
+      state.fieldKeys = collectFieldKeys(state.records);
       dom.urlCount.textContent = String(urls.length);
       dom.urlStats.textContent = "当前识别到 " + urls.length + " 条 URL";
+      renderFieldInsights();
+      drawOverlayPreview();
       return urls;
+    }
+
+    function updateUrlStats() {
+      return syncParsedRecords();
     }
 
     function updateCounts() {
@@ -1177,6 +1489,7 @@
       const canvas = dom.overlayCanvas;
       const ctx = overlayCtx;
       const template = getFirstTemplate();
+      const record = state.records[0] || null;
       const width = canvas.width;
       const height = canvas.height;
 
@@ -1235,6 +1548,12 @@
       ctx.fillRect(rect.x + rect.width - handleSize / 2, rect.y + rect.height - handleSize / 2, handleSize, handleSize);
       ctx.restore();
 
+      if (record && state.textLayers.length) {
+        state.textLayers.forEach((layer) => {
+          drawTextLayer(ctx, layer, record, scale, offsetX, offsetY);
+        });
+      }
+
       ctx.fillStyle = "rgba(24, 35, 33, 0.64)";
       ctx.font = '600 14px "PingFang SC", "SF Pro Text", "Helvetica Neue", sans-serif';
       ctx.fillText("模板预览尺寸: " + template.width + " × " + template.height, 18, height - 18);
@@ -1254,6 +1573,57 @@
       ctx.fillText("上传模板后可实时叠加预览", width / 2, height / 2 - 10);
       ctx.font = '500 15px "PingFang SC", "SF Pro Text", "Helvetica Neue", sans-serif';
       ctx.fillText("支持拖动定位二维码区域", width / 2, height / 2 + 26);
+      ctx.restore();
+    }
+
+    function wrapCanvasText(ctx, text, maxWidth) {
+      const paragraphs = String(text || "").split(/\n/);
+      const lines = [];
+      paragraphs.forEach((paragraph) => {
+        const chars = Array.from(paragraph || "");
+        if (!chars.length) {
+          lines.push("");
+          return;
+        }
+        let current = "";
+        chars.forEach((char) => {
+          const candidate = current + char;
+          if (current && ctx.measureText(candidate).width > maxWidth) {
+            lines.push(current);
+            current = char;
+          } else {
+            current = candidate;
+          }
+        });
+        if (current) {
+          lines.push(current);
+        }
+      });
+      return lines;
+    }
+
+    function drawTextLayer(ctx, layer, record, scale, offsetX = 0, offsetY = 0) {
+      const text = renderTemplateString(layer.contentTemplate, record).trim();
+      if (!text) {
+        return;
+      }
+
+      const fontSize = Math.max(10, layer.fontSize * scale);
+      const maxWidth = Math.max(24, layer.maxWidth * scale);
+      const lineHeight = fontSize * Math.max(1, Number(layer.lineHeight) || 1.35);
+      const x = offsetX + layer.x * scale;
+      const y = offsetY + layer.y * scale;
+
+      ctx.save();
+      ctx.fillStyle = layer.color;
+      ctx.textBaseline = "top";
+      ctx.textAlign = layer.align;
+      ctx.font = layer.fontWeight + " " + Math.round(fontSize) + 'px "PingFang SC", "SF Pro Text", "Helvetica Neue", sans-serif';
+
+      const lines = wrapCanvasText(ctx, text, maxWidth);
+      lines.forEach((line, index) => {
+        ctx.fillText(line, x, y + index * lineHeight, maxWidth);
+      });
       ctx.restore();
     }
 
@@ -1363,7 +1733,7 @@
     }
 
     function getUrlsOrFail() {
-      const urls = parseUrlsFromText(dom.urlInput.value);
+      const urls = updateUrlStats();
       if (!urls.length) {
         throw new Error("请先输入至少 1 条有效 URL。");
       }
@@ -1560,7 +1930,7 @@
       );
     }
 
-    async function generateQrDataUrl(url, targetSize) {
+    async function generateQrDataUrl(content, targetSize) {
       if (!window.QRCode) {
         throw new Error("本地 qrcode 依赖未加载成功，请确认 vendor/qrcode.min.js 存在。");
       }
@@ -1568,14 +1938,21 @@
       const host = dom.qrRenderHost;
       host.innerHTML = "";
 
-      new QRCode(host, {
-        text: url,
-        width: targetSize,
-        height: targetSize,
-        colorDark: "#000000",
-        colorLight: "#ffffff",
-        correctLevel: QRCode.CorrectLevel.H,
-      });
+      try {
+        new QRCode(host, {
+          text: content,
+          width: targetSize,
+          height: targetSize,
+          colorDark: "#000000",
+          colorLight: "#ffffff",
+          correctLevel: QRCode.CorrectLevel.M,
+        });
+      } catch (error) {
+        if (/overflow/i.test(String(error && error.message))) {
+          throw new Error("二维码内容太长了，请缩短二维码内容模板，或只保留关键字段。");
+        }
+        throw error;
+      }
 
       await nextFrame();
 
@@ -1592,13 +1969,14 @@
       throw new Error("二维码生成失败。");
     }
 
-    async function composeResult(url, template, index) {
+    async function composeResult(record, template, index) {
       const output = getOutputSize(template);
+      const qrContent = renderTemplateString(state.qrContentTemplate, record) || record.url;
       const qrSize = Math.max(
         1024,
         Math.ceil(Math.max(state.qrRect.width, state.qrRect.height) * output.scale * 3)
       );
-      const qrDataUrl = await generateQrDataUrl(url, qrSize);
+      const qrDataUrl = await generateQrDataUrl(qrContent, qrSize);
       const qrImage = await createImage(qrDataUrl);
 
       const canvas = document.createElement("canvas");
@@ -1618,6 +1996,13 @@
         Math.round(state.qrRect.height * output.scale)
       );
 
+      if (state.textLayers.length) {
+        ctx.imageSmoothingEnabled = true;
+        state.textLayers.forEach((layer) => {
+          drawTextLayer(ctx, layer, record, output.scale, 0, 0);
+        });
+      }
+
       const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
       if (!blob) {
         throw new Error("图片导出失败。");
@@ -1626,7 +2011,9 @@
       return {
         id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + index),
         index: index + 1,
-        url,
+        url: record.url,
+        qrContent,
+        record,
         templateName: template.name,
         filename: "qr_" + (index + 1) + ".png",
         blob,
@@ -1685,6 +2072,9 @@
           "<small>模板: " + escapeHtml(result.templateName) + " · " + result.width + " × " + result.height + "</small>",
           "</div>",
           '<div class="url-chip">' + escapeHtml(result.url) + "</div>",
+          (result.qrContent && result.qrContent !== result.url
+            ? '<div class="url-chip"><strong class="mono">QR:</strong> ' + escapeHtml(result.qrContent) + "</div>"
+            : ""),
         ].join("");
 
         const row = document.createElement("div");
@@ -1771,22 +2161,25 @@
       const nextResults = [];
       try {
         const urls = getUrlsOrFail();
+        const records = state.records.length ? state.records : buildRecordsFromUrls(urls);
         if (!state.templates.length) {
           throw new Error("请先上传至少 1 张模板图片。");
         }
 
+        state.qrContentTemplate = dom.qrContentTemplate.value.trim() || "{url}";
         state.generating = true;
         dom.generateBtn.disabled = true;
+        dom.downloadAllPngBtn.disabled = true;
         dom.downloadZipBtn.disabled = true;
         clearResults();
-        setStatus("开始生成，共 " + urls.length + " 条 URL。", "default");
+        setStatus("开始生成，共 " + records.length + " 条记录。", "default");
 
-        for (let index = 0; index < urls.length; index += 1) {
-          const url = urls[index];
+        for (let index = 0; index < records.length; index += 1) {
+          const record = records[index];
           const template = getAssignedTemplate(index);
-          setProgress(index, urls.length, "正在生成第 " + (index + 1) + " / " + urls.length + " 张");
-          setStatus("处理中: " + url, "default");
-          const result = await composeResult(url, template, index);
+          setProgress(index, records.length, "正在生成第 " + (index + 1) + " / " + records.length + " 张");
+          setStatus("处理中: " + record.url, "default");
+          const result = await composeResult(record, template, index);
           nextResults.push(result);
 
           if ((index + 1) % 4 === 0) {
@@ -1797,7 +2190,7 @@
 
         state.results = nextResults;
         renderResults();
-        setProgress(urls.length, urls.length, "生成完成，共 " + urls.length + " 张");
+        setProgress(records.length, records.length, "生成完成，共 " + records.length + " 张");
         setStatus("全部生成完成。现在可以下载单张 PNG 或整包 ZIP。", "success");
       } catch (error) {
         nextResults.forEach((result) => URL.revokeObjectURL(result.previewUrl));
@@ -1833,6 +2226,8 @@
           width: Math.round(state.qrRect.width),
           height: Math.round(state.qrRect.height),
         },
+        qrContentTemplate: state.qrContentTemplate,
+        textLayers: state.textLayers,
         assignMode: dom.assignMode.value,
         exportedAt: new Date().toISOString(),
       };
@@ -1863,22 +2258,33 @@
         dom.assignMode.value = data.assignMode;
       }
 
+      if (typeof data.qrContentTemplate === "string") {
+        state.qrContentTemplate = data.qrContentTemplate;
+        dom.qrContentTemplate.value = data.qrContentTemplate;
+      }
+
+      if (Array.isArray(data.textLayers) && data.textLayers.length) {
+        state.textLayers = data.textLayers.map((layer) => createDefaultTextLayer(layer));
+        renderTextLayers();
+      }
+
       const template = getFirstTemplate();
       if (template) {
         state.qrRect = clampRect(state.qrRect, template);
       }
 
       updateRectInputs();
+      renderFieldInsights();
       drawOverlayPreview();
       setStatus("配置已导入。", "success");
     }
 
     function fillSampleUrls() {
       dom.urlInput.value = [
-        "https://example.com/product/alpha",
-        "https://example.com/product/bravo",
-        "https://example.com/product/charlie",
-        "https://example.com/product/delta",
+        "https://example.com/product/alpha?name=张三&title=销售总监&company=OpenAI&id=A001",
+        "https://example.com/product/bravo?name=李四&title=市场经理&company=OpenAI&id=A002",
+        "https://example.com/product/charlie?name=王五&title=内容策划&company=OpenAI&id=A003",
+        "https://example.com/product/delta?name=赵六&title=品牌经理&company=OpenAI&id=A004",
       ].join("\n");
       updateUrlStats();
       setStatus("示例 URL 已填充。你可以直接替换成自己的链接。", "success");
@@ -1896,6 +2302,72 @@
       updateRectInputs();
       drawOverlayPreview();
       setStatus("二维码区域已重置为默认参数。", "success");
+    }
+
+    function addTextLayer(initial = {}) {
+      state.textLayers.push(createDefaultTextLayer(initial));
+      renderTextLayers();
+      drawOverlayPreview();
+    }
+
+    function loadSuggestedTextLayers() {
+      const suggestedKeys = ["name", "title", "company", "id", "slug"];
+      const available = suggestedKeys.filter((key) => state.fieldKeys.includes(key));
+      if (!available.length) {
+        setStatus("当前 URL 里还没有识别到常见字段。你也可以手动新增文字层并填写模板。", "warning");
+        return;
+      }
+
+      state.textLayers = available.slice(0, 4).map((key, index) =>
+        createDefaultTextLayer({
+          contentTemplate: key === "name" ? "{name}" : key === "title" ? "{title}" : key === "company" ? "{company}" : key === "id" ? "编号：{id}" : "{slug}",
+          x: 120,
+          y: 1180 + index * 56,
+          fontSize: index === 0 ? 42 : 28,
+          fontWeight: index === 0 ? "700" : "500",
+          maxWidth: 760,
+        })
+      );
+      renderTextLayers();
+      drawOverlayPreview();
+      setStatus("已为常见字段生成文字层。你可以继续拖位置或改文字模板。", "success");
+    }
+
+    function handleTextLayerChange(event) {
+      const target = event.target;
+      const layerId = target.dataset.layerId;
+      const field = target.dataset.layerField;
+      if (!layerId || !field) {
+        return;
+      }
+
+      const layer = state.textLayers.find((item) => item.id === layerId);
+      if (!layer) {
+        return;
+      }
+
+      if (["x", "y", "fontSize", "maxWidth", "lineHeight"].includes(field)) {
+        layer[field] = Number(target.value) || 0;
+      } else {
+        layer[field] = target.value;
+      }
+
+      renderFieldInsights();
+      drawOverlayPreview();
+    }
+
+    function handleTextLayerRemove(event) {
+      const button = event.target.closest("[data-remove-layer]");
+      if (!button) {
+        return;
+      }
+
+      state.textLayers = state.textLayers.filter((item) => item.id !== button.dataset.removeLayer);
+      if (!state.textLayers.length) {
+        state.textLayers = [createDefaultTextLayer({ contentTemplate: "{slug}" })];
+      }
+      renderTextLayers();
+      drawOverlayPreview();
     }
 
     function handleDependencyCheck() {
@@ -1942,6 +2414,12 @@
       input.addEventListener("input", applyRectFromInputs);
     });
 
+    dom.qrContentTemplate.addEventListener("input", () => {
+      state.qrContentTemplate = dom.qrContentTemplate.value.trim() || "{url}";
+      renderFieldInsights();
+      drawOverlayPreview();
+    });
+
     dom.assignMode.addEventListener("change", () => {
       setStatus(dom.assignMode.value === "cycle" ? "已切换为多模板循环分配。" : "已切换为全部使用第一张模板。", "success");
     });
@@ -1949,6 +2427,11 @@
     dom.generateBtn.addEventListener("click", generateAll);
     dom.downloadAllPngBtn.addEventListener("click", downloadAllPng);
     dom.downloadZipBtn.addEventListener("click", downloadZip);
+    dom.addTextLayerBtn.addEventListener("click", () => addTextLayer({ contentTemplate: "{slug}" }));
+    dom.loadSuggestedLayersBtn.addEventListener("click", loadSuggestedTextLayers);
+    dom.textLayerList.addEventListener("input", handleTextLayerChange);
+    dom.textLayerList.addEventListener("change", handleTextLayerChange);
+    dom.textLayerList.addEventListener("click", handleTextLayerRemove);
     dom.clearResultsBtn.addEventListener("click", () => {
       clearResults();
       setStatus("结果已清空。", "success");
@@ -1987,6 +2470,8 @@
       state.results.forEach((result) => URL.revokeObjectURL(result.previewUrl));
     });
 
+    ensureTextLayers();
+    renderTextLayers();
     updateRectInputs();
     updateUrlStats();
     updateCounts();
