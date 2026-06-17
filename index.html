@@ -369,6 +369,17 @@
       border: 1px solid rgba(24, 35, 33, 0.08);
     }
 
+    .layer-card {
+      transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+      cursor: pointer;
+    }
+
+    .layer-card.is-selected {
+      border-color: rgba(199, 92, 42, 0.46);
+      box-shadow: 0 14px 30px rgba(199, 92, 42, 0.12);
+      transform: translateY(-1px);
+    }
+
     .field-chip strong,
     .layer-card strong {
       display: block;
@@ -625,7 +636,7 @@
         <h1>批量 URL 转二维码 并自动套模板导出</h1>
         <p>这是一版可直接本地打开、完全离线可运行的纯前端工具。你可以一次性导入 10 到 500 条 URL，上传一张或多张模板图，把二维码叠到指定位置，再一键导出单张 PNG 或整包 ZIP。</p>
         <div class="hero-tags">
-          <span>v2026.06.17.2</span>
+          <span>v2026.06.17.3</span>
           <span>纯前端运行</span>
           <span>完全离线可用</span>
           <span>Canvas 高清合成</span>
@@ -840,7 +851,7 @@
           <div class="preview-head">
             <div>
               <h2>叠加预览</h2>
-              <p class="subcopy">拖动橙色区域可移动二维码，右下角控制点可缩放。</p>
+              <p class="subcopy">拖动橙色区域可移动二维码，点击文字后也可直接拖动文字层，右下角控制点可缩放二维码。</p>
             </div>
             <span class="badge">实时定位</span>
           </div>
@@ -885,6 +896,8 @@
       fieldKeys: [],
       qrContentTemplate: "{url}",
       textLayers: [],
+      selectedTextLayerId: null,
+      previewTextBounds: [],
       generating: false,
       overlayMeta: null,
       dragState: null,
@@ -1208,6 +1221,9 @@
       if (!state.textLayers.length) {
         state.textLayers = [createDefaultTextLayer({ contentTemplate: "{slug}" })];
       }
+      if (!state.selectedTextLayerId || !state.textLayers.some((layer) => layer.id === state.selectedTextLayerId)) {
+        state.selectedTextLayerId = state.textLayers[0].id;
+      }
     }
 
     function renderFieldInsights() {
@@ -1262,9 +1278,10 @@
 
       state.textLayers.forEach((layer, index) => {
         const card = document.createElement("div");
-        card.className = "layer-card";
+        card.className = "layer-card" + (layer.id === state.selectedTextLayerId ? " is-selected" : "");
+        card.dataset.layerCard = layer.id;
         card.innerHTML = [
-          "<strong>文字层 " + (index + 1) + "</strong>",
+          "<strong>文字层 " + (index + 1) + (layer.id === state.selectedTextLayerId ? " · 已选中" : "") + "</strong>",
           '<div class="field-stack">',
           '<label>文本模板<input type="text" data-layer-id="' + layer.id + '" data-layer-field="contentTemplate" value="' + escapeHtml(layer.contentTemplate) + '" placeholder="例如：姓名：{name}"></label>',
           '<div class="mini-grid">',
@@ -1285,6 +1302,39 @@
           "</div>",
         ].join("");
         dom.textLayerList.appendChild(card);
+      });
+    }
+
+    function selectTextLayer(layerId, options = {}) {
+      const { redrawPreview = true, rerenderList = true } = options;
+      if (!layerId || !state.textLayers.some((layer) => layer.id === layerId)) {
+        return;
+      }
+
+      state.selectedTextLayerId = layerId;
+      if (rerenderList) {
+        renderTextLayers();
+      }
+      if (redrawPreview) {
+        drawOverlayPreview();
+      }
+    }
+
+    function syncSingleLayerInputs(layer) {
+      if (!layer) {
+        return;
+      }
+
+      const fields = ["x", "y", "fontSize", "maxWidth", "lineHeight", "contentTemplate", "color", "fontWeight", "align"];
+      fields.forEach((field) => {
+        const input = dom.textLayerList.querySelector('[data-layer-id="' + layer.id + '"][data-layer-field="' + field + '"]');
+        if (!input) {
+          return;
+        }
+        const value = layer[field] == null ? "" : String(layer[field]);
+        if (input.value !== value) {
+          input.value = value;
+        }
       });
     }
 
@@ -1518,6 +1568,7 @@
       const offsetY = (height - drawHeight) / 2;
 
       state.overlayMeta = { scale, offsetX, offsetY, drawWidth, drawHeight, template };
+      state.previewTextBounds = [];
 
       ctx.save();
       ctx.shadowColor = "rgba(55, 34, 15, 0.18)";
@@ -1554,7 +1605,30 @@
 
       if (record && state.textLayers.length) {
         state.textLayers.forEach((layer) => {
-          drawTextLayer(ctx, layer, record, scale, offsetX, offsetY);
+          const layout = drawTextLayer(ctx, layer, record, scale, offsetX, offsetY);
+          if (!layout) {
+            return;
+          }
+
+          state.previewTextBounds.push({
+            layerId: layer.id,
+            x: layout.boxX,
+            y: layout.boxY,
+            width: Math.max(28, layout.boxWidth),
+            height: Math.max(20, layout.boxHeight),
+          });
+
+          if (layer.id === state.selectedTextLayerId) {
+            ctx.save();
+            ctx.strokeStyle = "rgba(22, 34, 33, 0.82)";
+            ctx.fillStyle = "rgba(22, 34, 33, 0.08)";
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([7, 5]);
+            ctx.fillRect(layout.boxX - 8, layout.boxY - 6, Math.max(32, layout.boxWidth + 16), Math.max(24, layout.boxHeight + 12));
+            ctx.strokeRect(layout.boxX - 8, layout.boxY - 6, Math.max(32, layout.boxWidth + 16), Math.max(24, layout.boxHeight + 12));
+            ctx.setLineDash([]);
+            ctx.restore();
+          }
         });
       }
 
@@ -1606,10 +1680,10 @@
       return lines;
     }
 
-    function drawTextLayer(ctx, layer, record, scale, offsetX = 0, offsetY = 0) {
+    function getTextLayerLayout(ctx, layer, record, scale, offsetX = 0, offsetY = 0) {
       const text = renderTemplateString(layer.contentTemplate, record).trim();
       if (!text) {
-        return;
+        return null;
       }
 
       const fontSize = Math.max(10, layer.fontSize * scale);
@@ -1619,16 +1693,51 @@
       const y = offsetY + layer.y * scale;
 
       ctx.save();
+      ctx.font = layer.fontWeight + " " + Math.round(fontSize) + 'px "PingFang SC", "SF Pro Text", "Helvetica Neue", sans-serif';
+      const lines = wrapCanvasText(ctx, text, maxWidth);
+      const measuredWidths = lines.map((line) => Math.min(maxWidth, ctx.measureText(line || " ").width));
+      ctx.restore();
+
+      const boxWidth = measuredWidths.length ? Math.max(...measuredWidths) : 0;
+      const boxHeight = lines.length * lineHeight;
+      let boxX = x;
+      if (layer.align === "center") {
+        boxX = x - boxWidth / 2;
+      } else if (layer.align === "right") {
+        boxX = x - boxWidth;
+      }
+
+      return {
+        text,
+        lines,
+        x,
+        y,
+        fontSize,
+        maxWidth,
+        lineHeight,
+        boxX,
+        boxY: y,
+        boxWidth,
+        boxHeight,
+      };
+    }
+
+    function drawTextLayer(ctx, layer, record, scale, offsetX = 0, offsetY = 0) {
+      const layout = getTextLayerLayout(ctx, layer, record, scale, offsetX, offsetY);
+      if (!layout) {
+        return null;
+      }
+
+      ctx.save();
       ctx.fillStyle = layer.color;
       ctx.textBaseline = "top";
       ctx.textAlign = layer.align;
-      ctx.font = layer.fontWeight + " " + Math.round(fontSize) + 'px "PingFang SC", "SF Pro Text", "Helvetica Neue", sans-serif';
-
-      const lines = wrapCanvasText(ctx, text, maxWidth);
-      lines.forEach((line, index) => {
-        ctx.fillText(line, x, y + index * lineHeight, maxWidth);
+      ctx.font = layer.fontWeight + " " + Math.round(layout.fontSize) + 'px "PingFang SC", "SF Pro Text", "Helvetica Neue", sans-serif';
+      layout.lines.forEach((line, index) => {
+        ctx.fillText(line, layout.x, layout.y + index * layout.lineHeight, layout.maxWidth);
       });
       ctx.restore();
+      return layout;
     }
 
     function previewRectFromTemplateRect(rect) {
@@ -1681,6 +1790,32 @@
       }
 
       const point = getPointerPosition(event);
+      const isInsideTextBounds = (item) =>
+        point.x >= item.x - 10 &&
+        point.x <= item.x + item.width + 10 &&
+        point.y >= item.y - 8 &&
+        point.y <= item.y + item.height + 8;
+      const selectedHit = state.previewTextBounds.find((item) => item.layerId === state.selectedTextLayerId && isInsideTextBounds(item));
+      const textHit = selectedHit || [...state.previewTextBounds].reverse().find((item) => isInsideTextBounds(item));
+
+      if (textHit) {
+        const layer = state.textLayers.find((item) => item.id === textHit.layerId);
+        if (!layer) {
+          return;
+        }
+
+        selectTextLayer(layer.id, { redrawPreview: false, rerenderList: true });
+        dom.overlayCanvas.classList.add("is-dragging");
+        state.dragState = {
+          mode: "move",
+          target: "text",
+          layerId: layer.id,
+          pointer: point,
+          originLayer: { x: layer.x, y: layer.y },
+        };
+        return;
+      }
+
       const previewRect = previewRectFromTemplateRect(state.qrRect);
       const handleSize = 20;
       const overHandle =
@@ -1702,6 +1837,7 @@
       dom.overlayCanvas.classList.add("is-dragging");
       state.dragState = {
         mode: overHandle ? "resize" : "move",
+        target: "qr",
         pointer: point,
         originRect: { ...previewRect },
       };
@@ -1715,6 +1851,21 @@
       const point = getPointerPosition(event);
       const dx = point.x - state.dragState.pointer.x;
       const dy = point.y - state.dragState.pointer.y;
+
+      if (state.dragState.target === "text") {
+        const layer = state.textLayers.find((item) => item.id === state.dragState.layerId);
+        const template = state.overlayMeta.template;
+        if (!layer || !template) {
+          return;
+        }
+
+        layer.x = Math.round(Math.max(0, Math.min(template.width, state.dragState.originLayer.x + dx / state.overlayMeta.scale)));
+        layer.y = Math.round(Math.max(0, Math.min(template.height, state.dragState.originLayer.y + dy / state.overlayMeta.scale)));
+        syncSingleLayerInputs(layer);
+        drawOverlayPreview();
+        return;
+      }
+
       const previewRect = { ...state.dragState.originRect };
 
       if (state.dragState.mode === "move") {
@@ -2269,6 +2420,7 @@
 
       if (Array.isArray(data.textLayers) && data.textLayers.length) {
         state.textLayers = data.textLayers.map((layer) => createDefaultTextLayer(layer));
+        state.selectedTextLayerId = state.textLayers[0].id;
         renderTextLayers();
       }
 
@@ -2310,8 +2462,7 @@
 
     function addTextLayer(initial = {}) {
       state.textLayers.push(createDefaultTextLayer(initial));
-      renderTextLayers();
-      drawOverlayPreview();
+      selectTextLayer(state.textLayers[state.textLayers.length - 1].id);
     }
 
     function loadSuggestedTextLayers() {
@@ -2332,6 +2483,7 @@
           maxWidth: 760,
         })
       );
+      state.selectedTextLayerId = state.textLayers[0] ? state.textLayers[0].id : null;
       renderTextLayers();
       drawOverlayPreview();
       setStatus("已为常见字段生成文字层。你可以继续拖位置或改文字模板。", "success");
@@ -2349,6 +2501,8 @@
       if (!layer) {
         return;
       }
+
+      state.selectedTextLayerId = layer.id;
 
       if (["x", "y", "fontSize", "maxWidth", "lineHeight"].includes(field)) {
         layer[field] = Number(target.value) || 0;
@@ -2370,8 +2524,23 @@
       if (!state.textLayers.length) {
         state.textLayers = [createDefaultTextLayer({ contentTemplate: "{slug}" })];
       }
+      state.selectedTextLayerId = state.textLayers[0] ? state.textLayers[0].id : null;
       renderTextLayers();
       drawOverlayPreview();
+    }
+
+    function handleTextLayerClick(event) {
+      const button = event.target.closest("[data-remove-layer]");
+      if (button) {
+        return;
+      }
+
+      const card = event.target.closest("[data-layer-card]");
+      if (!card) {
+        return;
+      }
+
+      selectTextLayer(card.dataset.layerCard);
     }
 
     function handleDependencyCheck() {
@@ -2436,6 +2605,7 @@
     dom.textLayerList.addEventListener("input", handleTextLayerChange);
     dom.textLayerList.addEventListener("change", handleTextLayerChange);
     dom.textLayerList.addEventListener("click", handleTextLayerRemove);
+    dom.textLayerList.addEventListener("click", handleTextLayerClick);
     dom.clearResultsBtn.addEventListener("click", () => {
       clearResults();
       setStatus("结果已清空。", "success");
